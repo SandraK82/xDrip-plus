@@ -80,8 +80,12 @@ public class DexCollectionService extends Service {
     public static double last_time_seen = 0;
     private static int watchdog_count = 0;
 
-    public final UUID xDripDataService = UUID.fromString(HM10Attributes.HM_10_SERVICE);
-    public final UUID xDripDataCharacteristic = UUID.fromString(HM10Attributes.HM_RX_TX);
+    //public final UUID xDripDataService = UUID.fromString(HM10Attributes.HM_10_SERVICE);
+    //public final UUID xDripDataCharacteristic = UUID.fromString(HM10Attributes.HM_RX_TX);
+    public final UUID xDripDataService = UUID.fromString(HM10Attributes.NRF_UART_SERVICE);
+    public final UUID xDripDataCharacteristic = UUID.fromString(HM10Attributes.NRF_UART_TX);
+
+    public final UUID CCCD = UUID.fromString(HM10Attributes.CLIENT_CHARACTERISTIC_CONFIG);
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -350,7 +354,22 @@ public class DexCollectionService extends Service {
             } else {
                 Log.w(TAG, "onServicesDiscovered: characteristic " + xDripDataCharacteristic + " not found");
             }
+
+
+            BluetoothGattDescriptor descriptor = mCharacteristic.getDescriptor(CCCD);
+            if(descriptor!=null)
+            {
+                descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                mBluetoothGatt.writeDescriptor(descriptor);
+            }
+            mBluetoothGatt.readCharacteristic(mCharacteristic);
+
             JoH.releaseWakeLock(wl);
+        }
+
+        @Override
+        public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            onCharacteristicChanged(gatt,characteristic);
         }
 
         @Override
