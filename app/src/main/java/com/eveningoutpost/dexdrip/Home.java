@@ -71,6 +71,8 @@ import com.eveningoutpost.dexdrip.UtilityModels.SendFeedBack;
 import com.eveningoutpost.dexdrip.UtilityModels.ShotStateStore;
 import com.eveningoutpost.dexdrip.UtilityModels.UndoRedo;
 import com.eveningoutpost.dexdrip.UtilityModels.UpdateActivity;
+import com.eveningoutpost.dexdrip.calibrations.CalibrationAbstract;
+import com.eveningoutpost.dexdrip.calibrations.PluggableCalibration;
 import com.eveningoutpost.dexdrip.languageeditor.LanguageEditor;
 import com.eveningoutpost.dexdrip.stats.StatsResult;
 import com.eveningoutpost.dexdrip.utils.ActivityWithMenu;
@@ -112,6 +114,8 @@ import lecho.lib.hellocharts.view.PreviewLineChartView;
 
 import static com.eveningoutpost.dexdrip.UtilityModels.ColorCache.X;
 import static com.eveningoutpost.dexdrip.UtilityModels.ColorCache.getCol;
+import static com.eveningoutpost.dexdrip.calibrations.PluggableCalibration.getCalibrationPlugin;
+import static com.eveningoutpost.dexdrip.calibrations.PluggableCalibration.getCalibrationPluginFromPreferences;
 
 
 public class Home extends ActivityWithMenu {
@@ -158,12 +162,13 @@ public class Home extends ActivityWithMenu {
     private TextView textBloodGlucose;
     private TextView textInsulinDose;
     private TextView textTime;
-    private final int REQ_CODE_SPEECH_INPUT = 1994;
-    private final int REQ_CODE_SPEECH_NOTE_INPUT = 1995;
-    private final int SHOWCASE_UNDO = 4;
-    private final int SHOWCASE_REDO = 5;
-    private final int SHOWCASE_NOTE_LONG = 6;
-    private final int SHOWCASE_VARIANT = 7;
+    private static final int REQ_CODE_SPEECH_INPUT = 1994;
+    private static final int REQ_CODE_SPEECH_NOTE_INPUT = 1995;
+    private static final int SHOWCASE_UNDO = 4;
+    private static final int SHOWCASE_REDO = 5;
+    private static final int SHOWCASE_NOTE_LONG = 6;
+    private static final int SHOWCASE_VARIANT = 7;
+    public static final int SHOWCASE_STATISTICS = 8;
     private static double last_speech_time = 0;
     private PreviewLineChartView previewChart;
     private TextView dexbridgeBattery;
@@ -473,22 +478,72 @@ public class Home extends ActivityWithMenu {
     }
 
     // handle sending the intent
-    private void processCalibrationNoUI(double glucosenumber, double timeoffset) {
-        if (timeoffset < 0) {
-            toaststaticnext("Got calibration in the future - cannot process!");
-            return;
-        }
-        if (glucosenumber > 0) {
-            Intent calintent = new Intent(getApplicationContext(), AddCalibration.class);
-            // TODO fix up class names
-            //calintent.setClassName("com.eveningoutpost.dexdrip", "com.eveningoutpost.dexdrip.AddCalibration");
-            calintent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            calintent.putExtra("bg_string", JoH.qs(glucosenumber));
-            calintent.putExtra("bg_age", Long.toString((long) (timeoffset / 1000)));
-            calintent.putExtra("allow_undo", "true");
-            getApplicationContext().startActivity(calintent);
-            Log.d(TAG, "ProcessCalibrationNoUI number: " + glucosenumber + " offset: " + timeoffset);
-        }
+    private void processCalibrationNoUI(final double glucosenumber, final double timeoffset) {
+
+                if (timeoffset < 0) {
+                    toaststaticnext("Got calibration in the future - cannot process!");
+                    return;
+                }
+                if (glucosenumber > 0) {
+                    final Intent calintent = new Intent(getApplicationContext(), AddCalibration.class);
+
+                    calintent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    calintent.putExtra("bg_string", JoH.qs(glucosenumber));
+                    calintent.putExtra("bg_age", Long.toString((long) (timeoffset / 1000)));
+                    calintent.putExtra("allow_undo", "true");
+                    Log.d(TAG, "ProcessCalibrationNoUI number: " + glucosenumber + " offset: " + timeoffset);
+
+                    final String calibration_type = getPreferencesStringWithDefault("treatment_fingerstick_calibration_usage","ask");
+                    if (calibration_type.equals("ask"))
+                    {
+                        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+                        builder.setTitle("Use BG for Calibration?");
+                        builder.setMessage("Do you want to use this entered finger-stick blood glucose test to calibrate with?\n\n(you can change when this dialog is displayed in Settings)");
+
+                        builder.setPositiveButton("YES, Calibrate", new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                calintent.putExtra("note_only","false");
+                                startIntentThreadWithDelayedRefresh(calintent);
+                                dialog.dismiss();
+                            }
+                        });
+
+                        builder.setNegativeButton("NO", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialog, int which) {
+                                calintent.putExtra("note_only","true");
+                                startIntentThreadWithDelayedRefresh(calintent);
+                                dialog.dismiss();
+                            }
+                        });
+
+                        AlertDialog alert = builder.create();
+                        alert.show();
+
+                    } else {
+                        // if use for calibration == "no" then this is a "note_only" type, otherwise it isn't
+                        calintent.putExtra("note_only", calibration_type.equals("never") ? "true" : "false");
+                        startIntentThreadWithDelayedRefresh(calintent);
+                    }
+                }
+    }
+
+    private void startIntentThreadWithDelayedRefresh(final Intent intent)
+    {
+        new Thread() {
+            @Override
+            public void run() {
+                getApplicationContext().startActivity(intent);
+                staticRefreshBGCharts();
+            }
+        }.start();
+
+        JoH.runOnUiThreadDelayed(new Runnable() {
+            @Override
+            public void run() {
+                staticRefreshBGCharts();
+            }
+        }, 4000);
     }
 
     private void processCalibration() {
@@ -524,14 +579,8 @@ public class Home extends ActivityWithMenu {
         if (hideTreatmentButtonsIfAllDone()) {
             updateCurrentBgInfo("approve button");
         }
-        new Thread() {
-            @Override
-            public void run() {
-                // possibly this should have some delay
-                processCalibrationNoUI(myglucosenumber, mytimeoffset);
-                staticRefreshBGCharts();
-            }
-        }.start();
+        processCalibrationNoUI(myglucosenumber, mytimeoffset);
+        staticRefreshBGCharts();
     }
 
     private void processIncomingBundle(Bundle bundle) {
@@ -1240,6 +1289,18 @@ public class Home extends ActivityWithMenu {
         super.onResume();
         checkEula();
         set_is_follower();
+        
+        if(BgGraphBuilder.isXLargeTablet(getApplicationContext())) {
+            this.currentBgValueText.setTextSize(100);
+            this.notificationText.setTextSize(40);
+            this.extraStatusLineText.setTextSize(40);
+        }
+        else if(BgGraphBuilder.isLargeTablet(getApplicationContext())) {
+            this.currentBgValueText.setTextSize(70);
+            this.notificationText.setTextSize(34); // 35 too big 33 works 
+            this.extraStatusLineText.setTextSize(35);
+        }
+        
         _broadcastReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context ctx, Intent intent) {
@@ -1372,7 +1433,7 @@ public class Home extends ActivityWithMenu {
         previewChart = (PreviewLineChartView) findViewById(R.id.chart_preview);
 
         chart.setLineChartData(bgGraphBuilder.lineData());
-        chart.setOnValueTouchListener(bgGraphBuilder.getOnValueSelectTooltipListener(true));
+        chart.setOnValueTouchListener(bgGraphBuilder.getOnValueSelectTooltipListener(mActivity));
 
         previewChart.setBackgroundColor(getCol(X.color_home_chart_background));
         previewChart.setZoomType(ZoomType.HORIZONTAL);
@@ -1477,6 +1538,7 @@ public class Home extends ActivityWithMenu {
         final TextView lowPredictText = (TextView) findViewById(R.id.lowpredict);
         if (BgGraphBuilder.isXLargeTablet(getApplicationContext())) {
             notificationText.setTextSize(40);
+            lowPredictText.setTextSize(30);
         }
         notificationText.setText("");
         notificationText.setTextColor(Color.RED);
@@ -1540,7 +1602,9 @@ public class Home extends ActivityWithMenu {
             if ((BgGraphBuilder.best_bg_estimate > 0) && (BgGraphBuilder.last_bg_estimate > 0)) {
                 final double estimated_delta = BgGraphBuilder.best_bg_estimate - BgGraphBuilder.last_bg_estimate;
 
-                notificationText.append("\nBG Original: " + bgGraphBuilder.unitized_string(BgReading.lastNoSenssor().calculated_value)
+                // TODO pull from BestGlucose? Check Slope + arrow etc TODO Original slope needs fixing when using plugin
+               // notificationText.append("\nBG Original: " + bgGraphBuilder.unitized_string(BgReading.lastNoSenssor().calculated_value)
+                notificationText.append("\nBG Original: " + bgGraphBuilder.unitized_string(BgGraphBuilder.original_value)
                         + " \u0394 " + bgGraphBuilder.unitizedDeltaString(false, true, true)
                         + " " + BgReading.lastNoSenssor().slopeArrow());
 
@@ -1843,9 +1907,10 @@ public class Home extends ActivityWithMenu {
                 || prefs.getBoolean("status_line_a1c_ifcc", false
                 || prefs.getBoolean("status_line_in", false))
                 || prefs.getBoolean("status_line_high", false)
-                || prefs.getBoolean("status_line_low", false)) {
+                || prefs.getBoolean("status_line_low", false)
+                || prefs.getBoolean("status_line_capture_percentage", false)) {
 
-            StatsResult statsResult = new StatsResult(prefs);
+            StatsResult statsResult = new StatsResult(prefs, getPreferencesBooleanDefaultFalse("extra_status_stats_24h"));
 
             if (prefs.getBoolean("status_line_avg", false)) {
                 if (extraline.length() != 0) extraline.append(' ');
@@ -1871,12 +1936,43 @@ public class Home extends ActivityWithMenu {
                 if (extraline.length() != 0) extraline.append(' ');
                 extraline.append(statsResult.getLowPercentage());
             }
+            if (prefs.getBoolean("status_line_capture_percentage", false)) {
+                if (extraline.length() != 0) extraline.append(' ');
+                extraline.append(statsResult.getCapturePercentage(false));
+            }
         }
-        if (prefs.getBoolean("status_line_capture_percentage", false)) {
-            if (extraline.length() != 0) extraline.append(' ');
-            if (BgGraphBuilder.capturePercentage>-1)
-                extraline.append("Cap: "+JoH.qs(BgGraphBuilder.capturePercentage)+"%");
+        if (prefs.getBoolean("extra_status_calibration_plugin", false)) {
+            final CalibrationAbstract plugin = getCalibrationPluginFromPreferences(); // make sure do this only once
+            if (plugin != null) {
+                final CalibrationAbstract.CalibrationData pcalibration = plugin.getCalibrationData();
+                if (extraline.length() > 0) extraline.append("\n"); // not tested on the widget yet
+                if (pcalibration != null) extraline.append("(" + plugin.getAlgorithmName() + ") s:" + JoH.qs(pcalibration.slope, 2) + " i:" + JoH.qs(pcalibration.intercept, 2));
+                BgReading bgReading = BgReading.last();
+                if (bgReading != null) {
+                    final boolean doMgdl = prefs.getString("units", "mgdl").equals("mgdl");
+                    extraline.append(" \u21D2 " + BgGraphBuilder.unitized_string(plugin.getGlucoseFromSensorValue(bgReading.age_adjusted_raw_value), doMgdl) + " " + BgGraphBuilder.unit(doMgdl));
+                }
+            }
+
+            // If we are using the plugin as the primary then show xdrip original as well
+            if (Home.getPreferencesBooleanDefaultFalse("display_glucose_from_plugin") || Home.getPreferencesBooleanDefaultFalse("use_pluggable_alg_as_primary")) {
+                final CalibrationAbstract plugin_xdrip = getCalibrationPlugin(PluggableCalibration.Type.xDripOriginal); // make sure do this only once
+                if (plugin_xdrip != null) {
+                    final CalibrationAbstract.CalibrationData pcalibration = plugin_xdrip.getCalibrationData();
+                    if (extraline.length() > 0)
+                        extraline.append("\n"); // not tested on the widget yet
+                    if (pcalibration != null)
+                        extraline.append("(" + plugin_xdrip.getAlgorithmName() + ") s:" + JoH.qs(pcalibration.slope, 2) + " i:" + JoH.qs(pcalibration.intercept, 2));
+                    BgReading bgReading = BgReading.last();
+                    if (bgReading != null) {
+                        final boolean doMgdl = prefs.getString("units", "mgdl").equals("mgdl");
+                        extraline.append(" \u21D2 " + BgGraphBuilder.unitized_string(plugin_xdrip.getGlucoseFromSensorValue(bgReading.age_adjusted_raw_value), doMgdl) + " " + BgGraphBuilder.unit(doMgdl));
+                    }
+                }
+            }
+
         }
+
         if (prefs.getBoolean("status_line_time", false)) {
             SimpleDateFormat sdf = new SimpleDateFormat("HH:mm");
             if (extraline.length() != 0) extraline.append(' ');
@@ -1895,13 +1991,16 @@ public class Home extends ActivityWithMenu {
     private void displayCurrentInfoFromReading(BgReading lastBgReading, boolean predictive) {
         double estimate = 0;
         double estimated_delta = 0;
-
-        String slope_arrow = lastBgReading.slopeArrow();
+        final BestGlucose.DisplayGlucose dg = BestGlucose.getDisplayGlucose();
+        //String slope_arrow = lastBgReading.slopeArrow();
+        String slope_arrow = dg.delta_arrow;
         String extrastring = "";
+        // when stale
         if ((new Date().getTime()) - stale_data_millis() - lastBgReading.timestamp > 0) {
             notificationText.setText(R.string.signal_missed);
             if (!predictive) {
-                estimate = lastBgReading.calculated_value;
+                //  estimate = lastBgReading.calculated_value;
+                estimate = dg.mgdl;
             } else {
                 estimate = BgReading.estimated_bg(lastBgReading.timestamp + (6000 * 7));
             }
@@ -1909,22 +2008,23 @@ public class Home extends ActivityWithMenu {
             currentBgValueText.setPaintFlags(currentBgValueText.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
             dexbridgeBattery.setPaintFlags(dexbridgeBattery.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
         } else {
+            // not stale
             if (notificationText.getText().length() == 0) {
                 notificationText.setTextColor(Color.WHITE);
             }
             boolean bg_from_filtered = prefs.getBoolean("bg_from_filtered", false);
             if (!predictive) {
-
-                estimate = lastBgReading.calculated_value; // normal
+                //estimate = lastBgReading.calculated_value; // normal
+                estimate = dg.mgdl;
                 currentBgValueText.setTypeface(null, Typeface.NORMAL);
 
                 // if noise has settled down then switch off filtered mode
                 if ((bg_from_filtered) && (BgGraphBuilder.last_noise < BgGraphBuilder.NOISE_FORGIVE) && (prefs.getBoolean("bg_compensate_noise", false))) {
                     bg_from_filtered = false;
                     prefs.edit().putBoolean("bg_from_filtered", false).apply();
-
                 }
 
+                // TODO this should be partially already be covered by dg - recheck
                 if ((BgGraphBuilder.last_noise > BgGraphBuilder.NOISE_TRIGGER)
                         && (BgGraphBuilder.best_bg_estimate > 0)
                         && (BgGraphBuilder.last_bg_estimate > 0)
@@ -1934,10 +2034,10 @@ public class Home extends ActivityWithMenu {
                     slope_arrow = BgReading.slopeToArrowSymbol(estimated_delta / (BgGraphBuilder.DEXCOM_PERIOD / 60000)); // delta by minute
                     currentBgValueText.setTypeface(null, Typeface.ITALIC);
                     extrastring = "\u26A0"; // warning symbol !
-                }
 
-                if ((BgGraphBuilder.last_noise > BgGraphBuilder.NOISE_HIGH) && (DexCollectionType.hasFiltered())) {
-                    bg_from_filtered = true; // force filtered mode
+                    if ((BgGraphBuilder.last_noise > BgGraphBuilder.NOISE_HIGH) && (DexCollectionType.hasFiltered())) {
+                        bg_from_filtered = true; // force filtered mode
+                    }
                 }
 
                 if (bg_from_filtered) {
@@ -1952,6 +2052,7 @@ public class Home extends ActivityWithMenu {
                 }
                 currentBgValueText.setText(stringEstimate + " " + slope_arrow);
             } else {
+                // old depreciated prediction
                 estimate = BgReading.activePrediction();
                 String stringEstimate = bgGraphBuilder.unitized_string(estimate);
                 currentBgValueText.setText(stringEstimate + " " + BgReading.activeSlopeArrow());
@@ -1961,19 +2062,18 @@ public class Home extends ActivityWithMenu {
         }
         int minutes = (int) (System.currentTimeMillis() - lastBgReading.timestamp) / (60 * 1000);
 
-        if ((!small_width) || (notificationText.length()>0)) notificationText.append("\n");
+        if ((!small_width) || (notificationText.length() > 0)) notificationText.append("\n");
         if (!small_width) {
             notificationText.append(minutes + ((minutes == 1) ? getString(R.string.space_minute_ago) : getString(R.string.space_minutes_ago)));
         } else {
             // small screen
             notificationText.append(minutes + getString(R.string.space_mins));
-            currentBgValueText.setPadding(0,0,0,0);
+            currentBgValueText.setPadding(0, 0, 0, 0);
         }
 
-        if (small_screen)
-        {
-           if (currentBgValueText.getText().length()>4)
-            currentBgValueText.setTextSize(25);
+        if (small_screen) {
+            if (currentBgValueText.getText().length() > 4)
+                currentBgValueText.setTextSize(25);
         }
 
         // do we actually need to do this query here if we again do it in unitizedDeltaString
@@ -2006,6 +2106,11 @@ public class Home extends ActivityWithMenu {
         } else {
             currentBgValueText.setTextColor(Color.WHITE);
         }
+
+        // TODO this should be made more efficient probably
+        if (Home.getPreferencesBooleanDefaultFalse("display_glucose_from_plugin") && (PluggableCalibration.getCalibrationPluginFromPreferences() != null)) {
+            currentBgValueText.setText("\u24C5" + currentBgValueText.getText()); // adds warning P in circle icon
+        }
     }
 
     private void addDisplayDelta() {
@@ -2037,6 +2142,7 @@ public class Home extends ActivityWithMenu {
         if (!prefs.getBoolean("wear_sync", false)) {
             menu.removeItem(R.id.action_open_watch_settings);
             menu.removeItem(R.id.action_resend_last_bg);
+            menu.removeItem(R.id.action_sync_watch_db);//KS
         }
 
         //speak readings
@@ -2239,7 +2345,7 @@ public class Home extends ActivityWithMenu {
                             Home.startHomeWithExtra(xdrip.getAppContext(), Home.CREATE_TREATMENT_NOTE, Long.toString(timestamp), Double.toString(position));
                         }
                     };
-                    Home.snackBar(getString(R.string.added)+":    " + treatment_text, mOnClickListener);
+                    Home.snackBar(getString(R.string.added)+":    " + treatment_text, mOnClickListener, mActivity);
                 }
 
                 if (getPreferencesBooleanDefaultFalse("default_to_voice_notes")) showcasemenu(SHOWCASE_NOTE_LONG);
@@ -2304,6 +2410,10 @@ public class Home extends ActivityWithMenu {
                 break;
             case R.id.action_open_watch_settings:
                 startService(new Intent(this, WatchUpdaterService.class).setAction(WatchUpdaterService.ACTION_OPEN_SETTINGS));
+            case R.id.action_sync_watch_db://KS
+                Log.d(TAG, "start WatchUpdaterService with ACTION_SYNC_DB");
+                startService(new Intent(this, WatchUpdaterService.class).setAction(WatchUpdaterService.ACTION_SYNC_DB));
+                break;
         }
 
         if (item.getItemId() == R.id.action_export_database) {
@@ -2413,6 +2523,13 @@ public class Home extends ActivityWithMenu {
         return false;
     }
 
+    public static void togglePreferencesBoolean(final String pref) {
+        if ((prefs == null) && (xdrip.getAppContext() != null)) {
+            prefs = PreferenceManager.getDefaultSharedPreferences(xdrip.getAppContext());
+        }
+        if (prefs != null) prefs.edit().putBoolean(pref, !prefs.getBoolean(pref, false)).apply();
+    }
+
     public static String getPreferencesStringDefaultBlank(final String pref) {
         if ((prefs == null) && (xdrip.getAppContext() != null)) {
             prefs = PreferenceManager.getDefaultSharedPreferences(xdrip.getAppContext());
@@ -2506,11 +2623,11 @@ public class Home extends ActivityWithMenu {
         }
     }
 
-    public static void snackBar(String message, View.OnClickListener mOnClickListener) {
+    public static void snackBar(String message, View.OnClickListener mOnClickListener, Activity activity) {
 
         android.support.design.widget.Snackbar.make(
 
-                mActivity.findViewById(android.R.id.content),
+                activity.findViewById(android.R.id.content),
                 message, android.support.design.widget.Snackbar.LENGTH_LONG)
                 .setAction(R.string.add_note, mOnClickListener)
                 //.setActionTextColor(Color.RED)

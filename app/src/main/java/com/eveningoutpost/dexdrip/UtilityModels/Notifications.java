@@ -276,7 +276,10 @@ public class Notifications extends IntentService {
 
     private void notificationSetter(Context context) {
         ReadPerfs(context);
-        BgGraphBuilder bgGraphBuilder = new BgGraphBuilder(context);
+        final long end = System.currentTimeMillis() + (60000 * 5);
+        final long start = end - (60000 * 60 * 3) - (60000 * 10);
+        BgGraphBuilder bgGraphBuilder = new BgGraphBuilder(context, start, end);
+        //BgGraphBuilder bgGraphBuilder = new BgGraphBuilder(context);
         if (bg_ongoing && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN)) {
             bgOngoingNotification(bgGraphBuilder);
         }
@@ -555,11 +558,19 @@ public class Notifications extends IntentService {
     }
 
     private void evaluateLowPredictionAlarm() {
-        if ((BgGraphBuilder.low_occurs_at > 0) && (BgGraphBuilder.last_noise < BgGraphBuilder.NOISE_TOO_HIGH_FOR_PREDICT)) {
-            if (!prefs.getBoolean("predict_lows_alarm", false)) return;
+
+        if (!prefs.getBoolean("predict_lows_alarm", false)) return;
+
+
+        // force BgGraphBuilder to calculate `low_occurs_at` and `last_noise`
+        // Workaround trying to resolve race donditions as by design they are static but updated/read asynchronously.
+
+        final double low_occurs_at = BgGraphBuilder.getCurrentLowOccursAt();
+
+        if ((low_occurs_at > 0) && (BgGraphBuilder.last_noise < BgGraphBuilder.NOISE_TOO_HIGH_FOR_PREDICT)) {
             final double low_predicted_alarm_minutes = Double.parseDouble(prefs.getString("low_predict_alarm_level", "40"));
             final double now = JoH.ts();
-            final double predicted_low_in_mins = (BgGraphBuilder.low_occurs_at - now) / 60000;
+            final double predicted_low_in_mins = (low_occurs_at - now) / 60000;
             android.util.Log.d(TAG, "evaluateLowPredictionAlarm: mins: " + predicted_low_in_mins);
             if (predicted_low_in_mins > 1) {
                 if (predicted_low_in_mins < low_predicted_alarm_minutes) {

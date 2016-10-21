@@ -19,9 +19,9 @@ import com.eveningoutpost.dexdrip.R;
 import com.eveningoutpost.dexdrip.ShareModels.ShareUploadableBg;
 import com.eveningoutpost.dexdrip.UtilityModels.BgGraphBuilder;
 import com.eveningoutpost.dexdrip.UtilityModels.BgSendQueue;
-import com.eveningoutpost.dexdrip.UtilityModels.CollectionServiceStarter;
 import com.eveningoutpost.dexdrip.UtilityModels.Constants;
 import com.eveningoutpost.dexdrip.UtilityModels.Notifications;
+import com.eveningoutpost.dexdrip.calibrations.CalibrationAbstract;
 import com.eveningoutpost.dexdrip.utils.DexCollectionType;
 import com.eveningoutpost.dexdrip.xdrip;
 import com.google.gson.Gson;
@@ -32,14 +32,15 @@ import com.google.gson.internal.bind.DateTypeAdapter;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Random;
 import java.util.UUID;
+
+import static com.eveningoutpost.dexdrip.calibrations.PluggableCalibration.getCalibrationPluginFromPreferences;
+import static com.eveningoutpost.dexdrip.calibrations.PluggableCalibration.newCloseSensorData;
 
 @Table(name = "BgReadings", id = BaseColumns._ID)
 public class BgReading extends Model implements ShareUploadableBg {
@@ -404,10 +405,22 @@ public class BgReading extends Model implements ShareUploadableBg {
                 if (lastBgReading != null && lastBgReading.calibration != null) {
                     if (lastBgReading.calibration_flag == true && ((lastBgReading.timestamp + (60000 * 20)) > bgReading.timestamp) && ((lastBgReading.calibration.timestamp + (60000 * 20)) > bgReading.timestamp)) {
                         lastBgReading.calibration.rawValueOverride(BgReading.weightedAverageRaw(lastBgReading.timestamp, bgReading.timestamp, lastBgReading.calibration.timestamp, lastBgReading.age_adjusted_raw_value, bgReading.age_adjusted_raw_value), context);
+                        newCloseSensorData();
                     }
                 }
-                bgReading.calculated_value = ((calibration.slope * bgReading.age_adjusted_raw_value) + calibration.intercept);
-                bgReading.filtered_calculated_value = ((calibration.slope * bgReading.ageAdjustedFiltered()) + calibration.intercept);
+
+                final CalibrationAbstract.CalibrationData pcalibration;
+                final CalibrationAbstract plugin = getCalibrationPluginFromPreferences(); // make sure do this only once
+
+                if ((plugin != null) && ((pcalibration = plugin.getCalibrationData()) != null) && (Home.getPreferencesBoolean("use_pluggable_alg_as_primary", false)))
+                {
+                    Log.d(TAG,"USING CALIBRATION PLUGIN AS PRIMARY!!!");
+                    bgReading.calculated_value = (pcalibration.slope * bgReading.age_adjusted_raw_value) + pcalibration.intercept;
+                    bgReading.filtered_calculated_value = (pcalibration.slope * bgReading.ageAdjustedFiltered()) + calibration.intercept;
+                } else {
+                    bgReading.calculated_value = ((calibration.slope * bgReading.age_adjusted_raw_value) + calibration.intercept);
+                    bgReading.filtered_calculated_value = ((calibration.slope * bgReading.ageAdjustedFiltered()) + calibration.intercept);
+                }
             }
 
             updateCalculatedValue(bgReading);
@@ -711,6 +724,22 @@ public class BgReading extends Model implements ShareUploadableBg {
                 .where("calculated_value != 0")
                 .where("raw_data != 0")
                 .orderBy("timestamp desc")
+                .limit(number)
+                .execute();
+    }
+
+    public static List<BgReading> latestForGraphAsc(int number, long startTime) {//KS
+        return latestForGraphAsc(number, startTime, Long.MAX_VALUE);
+    }
+
+    public static List<BgReading> latestForGraphAsc(int number, long startTime, long endTime) {//KS
+        return new Select()
+                .from(BgReading.class)
+                .where("timestamp >= " + Math.max(startTime, 0))
+                .where("timestamp <= " + endTime)
+                .where("calculated_value != 0")
+                .where("raw_data != 0")
+                .orderBy("timestamp asc")
                 .limit(number)
                 .execute();
     }
